@@ -226,16 +226,3 @@ GET /products?limit=10&offset=20
 
 - `limit`: how many records to return (default: 25, max: 500)
 - `offset`: how many records to skip (default: 0)
-
----
-
-## Error Responses
-
-| Status | Meaning |
-|---|---|
-| `404` | Record not found |
-| `500` | Internal server error |
-
-```json
-{ "error": "Product not found" }
-```
