@@ -2,7 +2,7 @@
 
 A read-only REST API for a sports retail database containing departments, categories, products, customers, orders, and order items.
 
-**Base URL:** `https://store-api.onrender.com` *(update after deploying to Render)*
+**Base URL:** `https://storeapi-60py.onrender.com`
 
 ---
 
