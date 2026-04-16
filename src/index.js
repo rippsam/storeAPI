@@ -6,6 +6,13 @@ const app = express()
 const PORT = process.env.PORT || 3000
 const DB_PATH = path.join(__dirname, '..', 'store.db')
 
+// Allow requests from any origin (needed for the frontend website)
+app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET')
+    next()
+})
+
 const db = new Database(DB_PATH, { readonly: true })
 
 // Parse limit/offset query params with defaults and caps
