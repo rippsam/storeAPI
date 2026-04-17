@@ -1,9 +1,9 @@
 /**
  * update-images.js
  *
- * For each product category, fetches relevant sport photos from LoremFlickr
- * (free, no API key), follows the redirect to capture stable CDN image URLs,
- * and writes them into the product_image column of store.db.
+ * Assigns each product a relevant image by extracting sport + product-type
+ * keywords from the product name, then fetching matching photos from
+ * LoremFlickr (free, no API key). Stable CDN URLs are stored in product_image.
  *
  * Usage:  node scripts/update-images.js
  */
@@ -16,69 +16,109 @@ const path     = require('path')
 const DB_PATH = path.join(__dirname, '..', 'store.db')
 const db = new Database(DB_PATH)
 
-// ── Category → search keyword mapping ────────────────────────────────────────
-const KEYWORDS = {
-  2:  'soccer',
-  3:  'baseball',
-  4:  'basketball',
-  5:  'lacrosse',
-  6:  'tennis',
-  7:  'hockey',
-  8:  'sport',
-  9:  'cardio',
-  10: 'weightlifting',
-  11: 'fitness',
-  12: 'boxing',
-  13: 'smartwatch',
-  14: 'yoga',
-  15: 'training',
-  16: 'fitness',
-  17: 'cleats',
-  18: 'sneakers',
-  19: 'shoes',
-  20: 'shoes',
-  21: 'sportswear',
-  22: 'accessories',
-  23: 'sportswear',
-  24: 'sportswear',
-  25: 'sportswear',
-  26: 'sportswear',
-  27: 'golf',
-  28: 'sport',
-  29: 'sport',
-  30: 'golf',
-  31: 'golf',
-  32: 'golf',
-  33: 'golf',
-  34: 'golf',
-  35: 'golf',
-  36: 'golf',
-  37: 'electronics',
-  38: 'golf',
-  39: 'sport',
-  40: 'accessories',
-  41: 'sport',
-  42: 'bicycle',
-  43: 'hiking',
-  44: 'hunting',
-  45: 'fishing',
-  46: 'outdoors',
-  47: 'boating',
-  48: 'surfing'
+// ── Keyword extraction ────────────────────────────────────────────────────────
+
+// Sport rules — checked in order; FIRST match wins.
+// Soccer must come before Football to avoid "Soccer" hitting the Football rule.
+var SPORT_RULES = [
+  { words: ['soccer', 'futbol'],                                              kw: 'soccer'          },
+  { words: ['baseball', 'softball', ' bat ', ' bat,', ' bat)'],              kw: 'baseball'        },
+  { words: ['basketball', 'hoop'],                                            kw: 'basketball'      },
+  { words: ['hockey', 'puck', 'goalie'],                                      kw: 'hockey'          },
+  { words: ['tennis', 'racket', 'racquet'],                                   kw: 'tennis'          },
+  { words: ['golf', 'putter', 'wedge', 'birdie', 'fairway'],                  kw: 'golf'            },
+  { words: ['boxing', 'mma', 'everlast', 'punching bag', 'heavy bag'],        kw: 'boxing'          },
+  { words: ['lacrosse'],                                                       kw: 'lacrosse'        },
+  { words: ['running shoe', 'run shoe', 'marathon', 'jogging'],               kw: 'running'         },
+  { words: ['yoga', 'pilates'],                                                kw: 'yoga'            },
+  { words: ['mountain bike', 'road bike', 'bicycle', 'cycling'],              kw: 'cycling'         },
+  { words: ['fishing', 'reel', 'fishing rod', 'tackle', 'lure', 'angling'],   kw: 'fishing'         },
+  { words: ['hunting', 'archery', 'bow ', 'arrow'],                           kw: 'hunting'         },
+  { words: ['hiking', 'camping', 'tent', 'canopy', 'camp chair'],             kw: 'hiking'          },
+  { words: ['surfing', 'kayak', 'canoe', 'boating', 'sailing', 'paddling'],   kw: 'surfing'         },
+  { words: ['swimming', 'swim', 'dive', 'snorkel'],                           kw: 'swimming'        },
+  // Football last — so it doesn't catch "Soccer" names that contain "football" globally
+  { words: ['football'],                                                       kw: 'americanfootball'},
+]
+
+// Product-type rules — checked after sport; FIRST match wins.
+var TYPE_RULES = [
+  { words: ['cleat', 'clea'],                          kw: 'cleats'       },
+  { words: ['jersey', 'jers'],                         kw: 'jersey'       },
+  { words: [' ball', ',ball', ')ball', 'ball '],       kw: 'ball'         },
+  { words: [' bat ', ' bat,', 'baseball bat'],         kw: 'bat'          },
+  { words: ['helmet', 'helme'],                        kw: 'helmet'       },
+  { words: ['glove', 'mitt'],                          kw: 'gloves'       },
+  { words: ['shoe', 'sneaker', 'slide', 'boot', 'clog', 'footwear'],
+                                                       kw: 'shoes'        },
+  { words: ['bike', 'bicycle'],                        kw: 'bicycle'      },
+  { words: ['racket', 'racquet'],                      kw: 'racket'       },
+  { words: ['club', 'putter', 'driver', 'wedge', 'iron set', 'wood'],
+                                                       kw: 'golfclub'     },
+  { words: [' bag', ',bag'],                           kw: 'bag'          },
+  { words: ['shorts', 'short'],                        kw: 'shorts'       },
+  { words: ['jacket', 'hoodie'],                       kw: 'jacket'       },
+  { words: ['shirt', 'tee '],                          kw: 'jersey'       },
+  { words: ['compression', 'tight', 'capri', ' bra'],  kw: 'sportswear'  },
+  { words: ['fuelband', 'fitbit', 'wristband', 'activity tracker',
+            'fitness tracker', 'heart rate'],          kw: 'smartwatch'   },
+  { words: ['watch', 'gps watch'],                     kw: 'smartwatch'   },
+  { words: ['weight set', 'barbell', 'dumbbell', 'kettlebell', 'olympic weight'],
+                                                       kw: 'weightlifting'},
+  { words: ['bench', 'squat rack'],                    kw: 'gym'          },
+  { words: ['elliptical', 'treadmill', 'stationary bike', 'rowing machine'],
+                                                       kw: 'gym'          },
+  { words: ['tent', 'canopy', 'shelter'],              kw: 'camping'      },
+  { words: ['kayak', 'paddle'],                        kw: 'kayaking'     },
+  { words: ['wagon', 'folding chair', 'camp chair'],   kw: 'outdoor'      },
+  { words: ['inversion'],                              kw: 'fitness'      },
+  { words: ['training mask'],                          kw: 'fitness'      },
+]
+
+function extractKeyword (name) {
+  var lower = name.toLowerCase()
+
+  var sport = null
+  for (var i = 0; i < SPORT_RULES.length; i++) {
+    var rule = SPORT_RULES[i]
+    for (var j = 0; j < rule.words.length; j++) {
+      if (lower.indexOf(rule.words[j]) !== -1) {
+        sport = rule.kw
+        break
+      }
+    }
+    if (sport) break
+  }
+
+  var type = null
+  for (var i = 0; i < TYPE_RULES.length; i++) {
+    var rule = TYPE_RULES[i]
+    for (var j = 0; j < rule.words.length; j++) {
+      if (lower.indexOf(rule.words[j]) !== -1) {
+        type = rule.kw
+        break
+      }
+    }
+    if (type) break
+  }
+
+  if (sport && type) return sport + ',' + type
+  if (sport)         return sport
+  if (type)          return type
+  return 'sport'
 }
 
-// ── Follow redirects to get the final stable CDN URL ─────────────────────────
+// ── HTTP redirect follower ────────────────────────────────────────────────────
+
 function resolveUrl (startUrl, hops) {
   hops = hops || 0
   return new Promise(function (resolve, reject) {
     if (hops > 6) return reject(new Error('Too many redirects'))
-
-    const mod = startUrl.startsWith('https') ? https : http
-    const req = mod.get(startUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, function (res) {
-      res.resume() // drain the response body
-
+    var mod = startUrl.startsWith('https') ? https : http
+    var req = mod.get(startUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, function (res) {
+      res.resume()
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        let next = res.headers.location
+        var next = res.headers.location
         if (!next.startsWith('http')) next = 'https://loremflickr.com' + next
         resolveUrl(next, hops + 1).then(resolve).catch(reject)
       } else if (res.statusCode === 200) {
@@ -87,86 +127,101 @@ function resolveUrl (startUrl, hops) {
         reject(new Error('HTTP ' + res.statusCode))
       }
     })
-
     req.on('error', reject)
     req.setTimeout(15000, function () { req.destroy(); reject(new Error('Timeout')) })
   })
 }
 
 function sleep (ms) {
-  return new Promise(function (resolve) { return setTimeout(resolve, ms) })
+  return new Promise(function (r) { return setTimeout(r, ms) })
 }
 
-// ── Fetch up to `target` unique image URLs for a keyword ─────────────────────
-async function fetchImages (keyword, target) {
-  const urls  = []
-  const seen  = new Set()
-  let   tries = 0
-  const max   = target * 4 // allow extra attempts to get unique ones
+// ── Fetch N unique stable CDN URLs for a keyword ─────────────────────────────
 
-  while (urls.length < target && tries < max) {
+async function fetchImages (keyword, count) {
+  var urls    = []
+  var seen    = new Set()
+  var tries   = 0
+  var maxTries = count * 5
+
+  while (urls.length < count && tries < maxTries) {
     tries++
-    const src = 'https://loremflickr.com/400/300/' + keyword
     try {
-      const final = await resolveUrl(src)
-      if (!seen.has(final)) {
-        seen.add(final)
-        urls.push(final)
-        process.stdout.write('.')
-      }
-      await sleep(300) // be polite to the server
-    } catch (err) {
+      var final = await resolveUrl('https://loremflickr.com/400/300/' + keyword)
+      if (!seen.has(final)) { seen.add(final); urls.push(final); process.stdout.write('.') }
+      await sleep(300)
+    } catch (e) {
       await sleep(600)
     }
   }
-
   return urls
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
-async function main () {
-  const categories = db.prepare(`
-    SELECT c.category_id, c.category_name, COUNT(p.product_id) AS cnt
-    FROM   categories c
-    JOIN   products   p ON p.product_category_id = c.category_id
-    GROUP  BY c.category_id
-    HAVING cnt > 0
-    ORDER  BY c.category_id
-  `).all()
+// ── Image cache: keyword → [urls] ────────────────────────────────────────────
 
-  const update = db.prepare('UPDATE products SET product_image = ? WHERE product_id = ?')
+var imageCache   = {}
+var cacheIndexes = {}
 
-  let totalUpdated = 0
+async function getNextImage (keyword) {
+  // Fetch images if not cached yet
+  if (!imageCache[keyword]) {
+    process.stdout.write('\n  [' + keyword + '] ')
+    var imgs = await fetchImages(keyword, 8)
 
-  for (const cat of categories) {
-    const keyword = KEYWORDS[cat.category_id] || 'sport'
-    const target  = Math.min(cat.cnt, 15) // up to 15 unique images per category
-
-    process.stdout.write('\n[' + cat.category_id + '] ' + cat.category_name +
-      ' (' + cat.cnt + ' products) "' + keyword + '" → ')
-
-    const images = await fetchImages(keyword, target)
-
-    if (images.length === 0) {
-      console.log('SKIPPED (no images returned)')
-      continue
+    // If 2-keyword combo returned fewer than 3 images, fall back to sport only
+    if (imgs.length < 3 && keyword.indexOf(',') !== -1) {
+      var fallback = keyword.split(',')[0]
+      process.stdout.write(' (too few, retrying as "' + fallback + '") ')
+      imgs = await fetchImages(fallback, 8)
     }
 
-    const products = db.prepare(
-      'SELECT product_id FROM products WHERE product_category_id = ? ORDER BY product_id'
-    ).all(cat.category_id)
-
-    db.transaction(function () {
-      products.forEach(function (p, i) {
-        update.run(images[i % images.length], p.product_id)
-      })
-    })()
-
-    totalUpdated += products.length
-    console.log(' ' + products.length + ' products updated')
+    imageCache[keyword]   = imgs.length > 0 ? imgs : ['']
+    cacheIndexes[keyword] = 0
   }
 
-  console.log('\nFinished. ' + totalUpdated + ' products updated.')
+  var imgs = imageCache[keyword]
+  if (imgs.length === 0 || imgs[0] === '') return ''
+  var idx = cacheIndexes[keyword]
+  cacheIndexes[keyword] = (idx + 1) % imgs.length
+  return imgs[idx]
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+
+async function main () {
+  var products = db.prepare('SELECT product_id, product_name FROM products ORDER BY product_id').all()
+  console.log('Processing ' + products.length + ' products...')
+
+  // Pre-scan: show which keywords will be needed
+  var keywordSet = {}
+  products.forEach(function (p) {
+    var kw = extractKeyword(p.product_name)
+    keywordSet[kw] = (keywordSet[kw] || 0) + 1
+  })
+  var uniqueKeywords = Object.keys(keywordSet)
+  console.log('Unique keyword combos: ' + uniqueKeywords.length)
+  console.log(uniqueKeywords.sort().join(', '))
+
+  // Assign image URLs
+  var assignments = []
+  for (var i = 0; i < products.length; i++) {
+    var p  = products[i]
+    var kw = extractKeyword(p.product_name)
+    var url = await getNextImage(kw)
+    assignments.push({ id: p.product_id, url: url })
+  }
+
+  // Write all to DB in one transaction
+  console.log('\n\nWriting to database...')
+  var update = db.prepare('UPDATE products SET product_image = ? WHERE product_id = ?')
+  db.transaction(function () {
+    assignments.forEach(function (a) {
+      if (a.url) update.run(a.url, a.id)
+    })
+  })()
+
+  var updated = assignments.filter(function (a) { return a.url }).length
+  console.log('Done. ' + updated + ' products updated.')
   db.close()
 }
 
