@@ -1,20 +1,26 @@
 /**
  * update-images.js
  *
- * Assigns product images using Pixabay API (free, no payment required).
- * Groups products by brand + product type to minimize API calls.
- * Tracks progress in scripts/.image-progress.json.
+ * Assigns product images using Gemini 2.5 Flash base knowledge.
+ * Asks Gemini for a direct image CDN URL for each product (no search grounding).
+ * Validates each URL with a HEAD request to confirm it's a real image.
+ * Falls back to LoremFlickr if no valid URL found.
  *
- * Usage:  PIXABAY_API_KEY=your_key node scripts/update-images.js
+ * Usage:
+ *   export $(cat .image-api-keys | xargs) && node scripts/update-images.js
  */
 
 const https    = require('https')
+const http     = require('http')
 const fs       = require('fs')
 const Database = require('better-sqlite3')
 const path     = require('path')
+const url      = require('url')
 
 const DB_PATH       = path.join(__dirname, '..', 'store.db')
 const PROGRESS_PATH = path.join(__dirname, '.image-progress.json')
+
+const DELAY_MS = 2000   // ~30 RPM (no search grounding = much faster)
 
 const db = new Database(DB_PATH)
 
@@ -22,191 +28,174 @@ function sleep(ms) {
   return new Promise(function(r) { return setTimeout(r, ms) })
 }
 
-// ── Brand extraction (mirrors home.js) ───────────────────────────────────────
-
-var MULTI_WORD_BRANDS = ['Under Armour', 'New Balance', 'The North Face']
-
-function parseBrand(name) {
-  for (var i = 0; i < MULTI_WORD_BRANDS.length; i++) {
-    if (name.indexOf(MULTI_WORD_BRANDS[i]) === 0) return MULTI_WORD_BRANDS[i].toLowerCase()
-  }
-  return name.split(' ')[0].toLowerCase()
-}
-
-// ── Sport + type keyword extraction ──────────────────────────────────────────
-
-var SPORT_RULES = [
-  { words: ['soccer', 'futbol'],                                              kw: 'soccer'          },
-  { words: ['baseball', 'softball', ' bat ', ' bat,', ' bat)'],              kw: 'baseball'        },
-  { words: ['basketball', 'hoop'],                                            kw: 'basketball'      },
-  { words: ['hockey', 'puck', 'goalie'],                                      kw: 'hockey'          },
-  { words: ['tennis', 'racket', 'racquet'],                                   kw: 'tennis'          },
-  { words: ['golf', 'putter', 'wedge', 'birdie', 'fairway'],                  kw: 'golf'            },
-  { words: ['boxing', 'mma', 'everlast', 'punching bag', 'heavy bag'],        kw: 'boxing'          },
-  { words: ['lacrosse'],                                                       kw: 'lacrosse'        },
-  { words: ['running shoe', 'run shoe', 'marathon', 'jogging'],               kw: 'running'         },
-  { words: ['yoga', 'pilates'],                                                kw: 'yoga'            },
-  { words: ['mountain bike', 'road bike', 'bicycle', 'cycling'],              kw: 'cycling'         },
-  { words: ['fishing', 'reel', 'fishing rod', 'tackle', 'lure', 'angling'],   kw: 'fishing'         },
-  { words: ['hunting', 'archery', 'bow ', 'arrow'],                           kw: 'hunting'         },
-  { words: ['hiking', 'camping', 'tent', 'canopy', 'camp chair'],             kw: 'hiking'          },
-  { words: ['surfing', 'kayak', 'canoe', 'boating', 'sailing', 'paddling'],   kw: 'water sports'    },
-  { words: ['swimming', 'swim', 'dive', 'snorkel'],                           kw: 'swimming'        },
-  { words: ['football'],                                                       kw: 'football'        },
-]
-
-var TYPE_RULES = [
-  { words: ['cleat', 'clea'],                         kw: 'cleats'       },
-  { words: ['jersey', 'jers'],                        kw: 'jersey'       },
-  { words: [' ball', ',ball', ')ball', 'ball '],      kw: 'ball'         },
-  { words: [' bat ', ' bat,', 'baseball bat'],        kw: 'bat'          },
-  { words: ['helmet', 'helme'],                       kw: 'helmet'       },
-  { words: ['glove', 'mitt'],                         kw: 'gloves'       },
-  { words: ['shoe', 'sneaker', 'slide', 'boot', 'clog', 'footwear'],
-                                                      kw: 'shoes'        },
-  { words: ['bike', 'bicycle'],                       kw: 'bike'         },
-  { words: ['racket', 'racquet'],                     kw: 'racket'       },
-  { words: ['club', 'putter', 'driver', 'wedge', 'iron set', 'wood'],
-                                                      kw: 'golf club'    },
-  { words: [' bag', ',bag'],                          kw: 'bag'          },
-  { words: ['shorts', 'short'],                       kw: 'shorts'       },
-  { words: ['jacket', 'hoodie'],                      kw: 'jacket'       },
-  { words: ['shirt', 'tee '],                         kw: 'shirt'        },
-  { words: ['compression', 'tight', 'capri', ' bra'], kw: 'sportswear'  },
-  { words: ['watch', 'fuelband', 'fitbit', 'wristband', 'activity tracker',
-            'fitness tracker', 'heart rate', 'gps watch'],
-                                                      kw: 'fitness watch'},
-  { words: ['weight set', 'barbell', 'dumbbell', 'kettlebell', 'olympic weight'],
-                                                      kw: 'weights'      },
-  { words: ['bench', 'squat rack'],                   kw: 'weight bench' },
-  { words: ['elliptical'],                            kw: 'elliptical'   },
-  { words: ['treadmill'],                             kw: 'treadmill'    },
-  { words: ['tent', 'canopy', 'shelter'],             kw: 'tent'         },
-  { words: ['kayak', 'paddle'],                       kw: 'kayak'        },
-  { words: ['wagon', 'folding chair', 'camp chair'],  kw: 'camping chair'},
-  { words: ['inversion'],                             kw: 'inversion table'},
-  { words: ['training mask'],                         kw: 'training mask'},
-  { words: ['inline skate', 'rollerblade'],           kw: 'inline skates'},
-  { words: ['stand-up paddle', 'paddleboard'],        kw: 'paddleboard'  },
-  { words: ['cooler'],                                kw: 'cooler'       },
-  { words: ['camera'],                                kw: 'action camera'},
-  { words: ['sock'],                                  kw: 'socks'        },
-  { words: ['backpack'],                              kw: 'backpack'     },
-  { words: ['table tennis', 'ping pong'],             kw: 'table tennis' },
-]
-
-function extractKeyword(name) {
-  var lower = name.toLowerCase()
-
-  var sport = null
-  for (var i = 0; i < SPORT_RULES.length; i++) {
-    var rule = SPORT_RULES[i]
-    for (var j = 0; j < rule.words.length; j++) {
-      if (lower.indexOf(rule.words[j]) !== -1) { sport = rule.kw; break }
-    }
-    if (sport) break
-  }
-
-  var type = null
-  for (var i = 0; i < TYPE_RULES.length; i++) {
-    var rule = TYPE_RULES[i]
-    for (var j = 0; j < rule.words.length; j++) {
-      if (lower.indexOf(rule.words[j]) !== -1) { type = rule.kw; break }
-    }
-    if (type) break
-  }
-
-  if (sport && type) return sport + ' ' + type
-  if (type)          return type
-  if (sport)         return sport + ' gear'
-  return 'sports equipment'
-}
-
-function buildGroupKey(name) {
-  var brand   = parseBrand(name)
-  var keyword = extractKeyword(name)
-  return brand + ' ' + keyword
-}
-
 // ── Progress file ─────────────────────────────────────────────────────────────
 
 function loadProgress() {
   try { return JSON.parse(fs.readFileSync(PROGRESS_PATH, 'utf8')) }
-  catch (e) { return { done: [] } }
+  catch (e) { return { done: [], urls: {} } }
 }
 
 function saveProgress(progress) {
   fs.writeFileSync(PROGRESS_PATH, JSON.stringify(progress, null, 2))
 }
 
-// ── Pixabay Image Search ──────────────────────────────────────────────────────
+// ── HTTPS request ─────────────────────────────────────────────────────────────
 
-function searchPixabay(query, apiKey) {
-  return new Promise(function(resolve) {
-    var q       = encodeURIComponent(query)
-    var options = {
-      hostname: 'pixabay.com',
-      path: '/api/?key=' + apiKey + '&q=' + q + '&image_type=photo&per_page=3&safesearch=true',
-      method: 'GET'
-    }
-
+function httpsPost(options, body) {
+  return new Promise(function(resolve, reject) {
     var req = https.request(options, function(res) {
-      var body = ''
-      res.on('data', function(chunk) { body += chunk })
+      var chunks = []
+      res.on('data', function(c) { chunks.push(c) })
       res.on('end', function() {
-        try {
-          var data = JSON.parse(body)
-          if (data.hits && data.hits.length > 0) {
-            resolve(data.hits[0].webformatURL || null)
-          } else {
-            resolve(null)
-          }
-        } catch (e) { resolve(null) }
+        resolve({ statusCode: res.statusCode, body: Buffer.concat(chunks).toString() })
       })
     })
-
-    req.on('error', function() { resolve(null) })
-    req.setTimeout(15000, function() { req.destroy(); resolve(null) })
+    req.on('error', reject)
+    req.setTimeout(20000, function() { req.destroy(new Error('timeout')) })
+    req.write(body)
     req.end()
   })
 }
 
+// ── Validate image URL ────────────────────────────────────────────────────────
+
+function validateImageUrl(rawUrl) {
+  return new Promise(function(resolve) {
+    try {
+      var parsed = new url.URL(rawUrl)
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return resolve(false)
+      var lib = parsed.protocol === 'https:' ? https : http
+      var opts = {
+        hostname: parsed.hostname,
+        path: parsed.pathname + parsed.search,
+        method: 'HEAD',
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      }
+      var req = lib.request(opts, function(res) {
+        var ct = res.headers['content-type'] || ''
+        // Accept 200 with image content-type, or any URL that ends in image extension
+        var isImage = ct.indexOf('image') !== -1
+        var hasImgExt = /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(rawUrl)
+        resolve(res.statusCode === 200 && (isImage || hasImgExt))
+      })
+      req.on('error', function() { resolve(false) })
+      req.setTimeout(8000, function() { req.destroy(); resolve(false) })
+      req.end()
+    } catch (e) { resolve(false) }
+  })
+}
+
+// ── Gemini: get image URL from base knowledge ─────────────────────────────────
+
+function getImageUrl(productName, apiKey) {
+  var prompt =
+    'What is a direct product image URL for "' + productName + '"? ' +
+    'This must be a real URL from a retailer CDN such as i.ebayimg.com, ' +
+    'm.media-amazon.com, scene7.com, images.nike.com, or similar. ' +
+    'Return ONLY the URL itself with no other text, or the word "none" if you are not confident the URL is real and valid.'
+
+  var body = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }]
+  })
+
+  var options = {
+    hostname: 'generativelanguage.googleapis.com',
+    path: '/v1beta/models/gemini-2.5-flash:generateContent?key=' + apiKey,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body)
+    }
+  }
+
+  return httpsPost(options, body).then(function(res) {
+    try {
+      var data = JSON.parse(res.body)
+      if (data.error) {
+        console.error('  Gemini error:', data.error.code, data.error.message)
+        return null
+      }
+      var text = data.candidates &&
+                 data.candidates[0] &&
+                 data.candidates[0].content &&
+                 data.candidates[0].content.parts &&
+                 data.candidates[0].content.parts[0] &&
+                 data.candidates[0].content.parts[0].text
+      if (!text) return null
+      text = text.trim()
+      if (text === 'none' || text.toLowerCase().startsWith('none')) return null
+
+      // Extract first https URL
+      var match = text.match(/https?:\/\/[^\s"'<>\]]+/i)
+      return match ? match[0] : null
+    } catch (e) { return null }
+  }).catch(function() { return null })
+}
+
 // ── LoremFlickr fallback ──────────────────────────────────────────────────────
 
-function loremFlickrFallback(productName) {
-  var keyword = extractKeyword(productName).split(' ')[0]
-  return 'https://loremflickr.com/400/300/' + (keyword || 'sport')
+var SPORT_RULES = [
+  { words: ['soccer', 'futbol'],                           kw: 'soccer'           },
+  { words: ['baseball', 'softball', ' bat '],              kw: 'baseball'         },
+  { words: ['basketball', 'hoop'],                         kw: 'basketball'       },
+  { words: ['hockey', 'puck'],                             kw: 'hockey'           },
+  { words: ['tennis', 'racket', 'racquet'],                kw: 'tennis'           },
+  { words: ['golf', 'putter', 'wedge', 'iron', 'driver'],  kw: 'golf'            },
+  { words: ['boxing', 'mma'],                              kw: 'boxing'           },
+  { words: ['yoga', 'pilates'],                            kw: 'yoga'             },
+  { words: ['bike', 'bicycle', 'cycling'],                 kw: 'cycling'          },
+  { words: ['fishing', 'tackle', 'rod', 'reel'],           kw: 'fishing'          },
+  { words: ['hiking', 'camping', 'tent', 'backpack'],      kw: 'hiking'           },
+  { words: ['swimming', 'swim'],                           kw: 'swimming'         },
+  { words: ['running', 'marathon'],                        kw: 'running'          },
+  { words: ['football'],                                   kw: 'americanfootball' },
+  { words: ['lacrosse'],                                   kw: 'lacrosse'         },
+  { words: ['volleyball'],                                 kw: 'volleyball'       },
+  { words: ['ski', 'skiing', 'snowboard'],                 kw: 'skiing'           },
+  { words: ['racquetball', 'squash'],                      kw: 'racquetball'      },
+]
+
+function loremFlickrFallback(name) {
+  var lower = name.toLowerCase()
+  for (var i = 0; i < SPORT_RULES.length; i++) {
+    for (var j = 0; j < SPORT_RULES[i].words.length; j++) {
+      if (lower.indexOf(SPORT_RULES[i].words[j]) !== -1) {
+        return 'https://loremflickr.com/400/300/' + SPORT_RULES[i].kw
+      }
+    }
+  }
+  return 'https://loremflickr.com/400/300/sport'
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  var apiKey = process.env.PIXABAY_API_KEY
+  var apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) {
-    console.error('Error: PIXABAY_API_KEY environment variable is not set.')
-    console.error('Usage: PIXABAY_API_KEY=your_key node scripts/update-images.js')
+    console.error('Error: GEMINI_API_KEY must be set.')
+    console.error('Usage: export $(cat .image-api-keys | xargs) && node scripts/update-images.js')
     process.exit(1)
   }
 
   var products = db.prepare('SELECT product_id, product_name FROM products ORDER BY product_id').all()
   console.log('Loaded ' + products.length + ' products.')
 
-  // Build groupKey → [product_ids] map
-  var groupMap = {}
+  var nameMap = {}
   products.forEach(function(p) {
-    var key = buildGroupKey(p.product_name.trim())
-    if (!groupMap[key]) groupMap[key] = []
-    groupMap[key].push(p.product_id)
+    var name = p.product_name.trim()
+    if (!nameMap[name]) nameMap[name] = []
+    nameMap[name].push(p.product_id)
   })
 
-  var allKeys   = Object.keys(groupMap)
+  var allNames  = Object.keys(nameMap)
   var progress  = loadProgress()
   var doneSet   = new Set(progress.done)
-  var remaining = allKeys.filter(function(k) { return !doneSet.has(k) })
+  var urlCache  = progress.urls || {}
+  var remaining = allNames.filter(function(n) { return !doneSet.has(n) })
 
-  console.log('Unique brand+type groups: ' + allKeys.length)
-  console.log('Already processed: ' + doneSet.size)
-  console.log('Remaining: ' + remaining.length + '\n')
+  console.log('Unique product names: ' + allNames.length)
+  console.log('Already processed:    ' + doneSet.size)
+  console.log('Remaining:            ' + remaining.length + '\n')
 
   if (remaining.length === 0) {
     console.log('All products already have images. Nothing to do.')
@@ -214,62 +203,60 @@ async function main() {
     return
   }
 
-  var urlCache  = {}
-  var found     = 0
-  var fallbacks = 0
+  var realImages = 0
+  var fallbacks  = 0
 
   for (var i = 0; i < remaining.length; i++) {
-    var key = remaining[i]
-    var url = await searchPixabay(key, apiKey)
+    var name     = remaining[i]
+    var finalUrl = null
 
-    if (url) {
-      urlCache[key] = url
-      found++
-    } else {
-      // Try sport-only fallback query
-      var sportOnly = key.split(' ').slice(1).join(' ')
-      url = await searchPixabay(sportOnly, apiKey)
-      await sleep(400)
+    var candidate = await getImageUrl(name, apiKey)
 
-      if (url) {
-        urlCache[key] = url
-        found++
-      } else {
-        urlCache[key] = loremFlickrFallback(key)
-        fallbacks++
+    if (candidate) {
+      var valid = await validateImageUrl(candidate)
+      if (valid) {
+        finalUrl = candidate
+        realImages++
       }
     }
 
-    doneSet.add(key)
-    console.log('[' + doneSet.size + '/' + allKeys.length + '] ' + key + '\n  → ' + urlCache[key])
-    await sleep(400)
+    if (!finalUrl) {
+      finalUrl = loremFlickrFallback(name)
+      fallbacks++
+    }
+
+    urlCache[name] = finalUrl
+    doneSet.add(name)
+    console.log('[' + doneSet.size + '/' + allNames.length + '] ' + name.substring(0, 55) + '\n  → ' + finalUrl)
+
+    // Save progress every 10 items
+    if (doneSet.size % 10 === 0) {
+      saveProgress({ done: Array.from(doneSet), urls: urlCache })
+    }
+
+    if (i < remaining.length - 1) await sleep(DELAY_MS)
   }
 
-  // Write all to DB
+  // Write to DB
   console.log('\nWriting to database...')
   var update = db.prepare('UPDATE products SET product_image = ? WHERE product_id = ?')
   db.transaction(function() {
     products.forEach(function(p) {
-      var key = buildGroupKey(p.product_name.trim())
-      var url = urlCache[key]
-      if (url) update.run(url, p.product_id)
+      var u = urlCache[p.product_name.trim()]
+      if (u) update.run(u, p.product_id)
     })
   })()
 
-  progress.done = Array.from(doneSet)
-  saveProgress(progress)
+  saveProgress({ done: Array.from(doneSet), urls: urlCache })
 
-  var stillLeft = allKeys.length - doneSet.size
+  var pct = Math.round(100 * realImages / (realImages + fallbacks))
   console.log('\nDone.')
-  console.log('  Pixabay results:       ' + found)
-  console.log('  LoremFlickr fallbacks: ' + fallbacks)
-  console.log('  Groups processed: ' + doneSet.size + ' / ' + allKeys.length)
+  console.log('  Real product images: ' + realImages + ' (' + pct + '%)')
+  console.log('  LoremFlickr:         ' + fallbacks)
+  console.log('  Total: ' + doneSet.size + ' / ' + allNames.length)
 
-  if (stillLeft === 0) {
-    console.log('\nALL PRODUCTS UPDATED. Task complete.')
-  } else {
-    console.log('  Remaining: ' + stillLeft + ' (run again tomorrow)')
-  }
+  if (allNames.length === doneSet.size) console.log('\nALL PRODUCTS UPDATED.')
+  else console.log('  Run again to continue.')
 
   db.close()
 }
