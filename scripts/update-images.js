@@ -155,16 +155,17 @@ var SPORT_RULES = [
   { words: ['racquetball', 'squash'],                      kw: 'racquetball'      },
 ]
 
-function loremFlickrFallback(name) {
+function loremFlickrFallback(name, productId) {
   var lower = name.toLowerCase()
+  var lock = '?lock=' + (productId || Math.abs(name.split('').reduce(function(h, c) { return (h * 31 + c.charCodeAt(0)) | 0; }, 0)))
   for (var i = 0; i < SPORT_RULES.length; i++) {
     for (var j = 0; j < SPORT_RULES[i].words.length; j++) {
       if (lower.indexOf(SPORT_RULES[i].words[j]) !== -1) {
-        return 'https://loremflickr.com/400/300/' + SPORT_RULES[i].kw
+        return 'https://loremflickr.com/400/300/' + SPORT_RULES[i].kw + lock
       }
     }
   }
-  return 'https://loremflickr.com/400/300/sport'
+  return 'https://loremflickr.com/400/300/sport' + lock
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -189,8 +190,15 @@ async function main() {
 
   var allNames  = Object.keys(nameMap)
   var progress  = loadProgress()
-  var doneSet   = new Set(progress.done)
   var urlCache  = progress.urls || {}
+
+  // Re-queue any product that previously got a LoremFlickr fallback
+  var doneSet = new Set(
+    (progress.done || []).filter(function(n) {
+      return urlCache[n] && urlCache[n].indexOf('loremflickr.com') === -1
+    })
+  )
+
   var remaining = allNames.filter(function(n) { return !doneSet.has(n) })
 
   console.log('Unique product names: ' + allNames.length)
