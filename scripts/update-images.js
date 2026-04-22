@@ -1,8 +1,8 @@
 /**
  * update-images.js
  *
- * Assigns product images using Gemini 2.5 Flash base knowledge.
- * Asks Gemini for a direct image CDN URL for each product (no search grounding).
+ * Replaces LoremFlickr fallback images with real product images via Bing Image Search API.
+ * Only processes products currently using LoremFlickr in the DB.
  * Validates each URL with a HEAD request to confirm it's a real image.
  * Falls back to LoremFlickr if no valid URL found.
  *
@@ -20,7 +20,7 @@ const url      = require('url')
 const DB_PATH       = path.join(__dirname, '..', 'store.db')
 const PROGRESS_PATH = path.join(__dirname, '.image-progress.json')
 
-const DELAY_MS = 2000   // ~30 RPM (no search grounding = much faster)
+const DELAY_MS = 350    // ~170 RPM, well under Bing F0 limit of 3 TPS
 
 const db = new Database(DB_PATH)
 
@@ -39,9 +39,9 @@ function saveProgress(progress) {
   fs.writeFileSync(PROGRESS_PATH, JSON.stringify(progress, null, 2))
 }
 
-// ── HTTPS request ─────────────────────────────────────────────────────────────
+// ── HTTPS GET ─────────────────────────────────────────────────────────────────
 
-function httpsPost(options, body) {
+function httpsGet(options) {
   return new Promise(function(resolve, reject) {
     var req = https.request(options, function(res) {
       var chunks = []
@@ -52,7 +52,6 @@ function httpsPost(options, body) {
     })
     req.on('error', reject)
     req.setTimeout(20000, function() { req.destroy(new Error('timeout')) })
-    req.write(body)
     req.end()
   })
 }
@@ -85,49 +84,34 @@ function validateImageUrl(rawUrl) {
   })
 }
 
-// ── Gemini: get image URL from base knowledge ─────────────────────────────────
+// ── Bing Image Search ─────────────────────────────────────────────────────────
 
-function getImageUrl(productName, apiKey) {
-  var prompt =
-    'What is a direct product image URL for "' + productName + '"? ' +
-    'This must be a real URL from a retailer CDN such as i.ebayimg.com, ' +
-    'm.media-amazon.com, scene7.com, images.nike.com, or similar. ' +
-    'Return ONLY the URL itself with no other text, or the word "none" if you are not confident the URL is real and valid.'
-
-  var body = JSON.stringify({
-    contents: [{ parts: [{ text: prompt }] }]
-  })
-
+function searchBing(productName, apiKey) {
+  var query = encodeURIComponent(productName)
   var options = {
-    hostname: 'generativelanguage.googleapis.com',
-    path: '/v1beta/models/gemini-2.5-flash:generateContent?key=' + apiKey,
-    method: 'POST',
+    hostname: 'api.bing.microsoft.com',
+    path: '/v7.0/images/search?q=' + query + '&count=5&imageType=Photo&safeSearch=Off',
+    method: 'GET',
     headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body)
+      'Ocp-Apim-Subscription-Key': apiKey
     }
   }
 
-  return httpsPost(options, body).then(function(res) {
+  return httpsGet(options).then(function(res) {
     try {
-      var data = JSON.parse(res.body)
-      if (data.error) {
-        console.error('  Gemini error:', data.error.code, data.error.message)
+      if (res.statusCode !== 200) {
+        console.error('  Bing error:', res.statusCode, res.body.substring(0, 120))
         return null
       }
-      var text = data.candidates &&
-                 data.candidates[0] &&
-                 data.candidates[0].content &&
-                 data.candidates[0].content.parts &&
-                 data.candidates[0].content.parts[0] &&
-                 data.candidates[0].content.parts[0].text
-      if (!text) return null
-      text = text.trim()
-      if (text === 'none' || text.toLowerCase().startsWith('none')) return null
-
-      // Extract first https URL
-      var match = text.match(/https?:\/\/[^\s"'<>\]]+/i)
-      return match ? match[0] : null
+      var data = JSON.parse(res.body)
+      var values = data.value
+      if (!values || values.length === 0) return null
+      // Return first valid contentUrl
+      for (var i = 0; i < values.length; i++) {
+        var u = values[i].contentUrl
+        if (u && /^https?:\/\//i.test(u)) return u
+      }
+      return null
     } catch (e) { return null }
   }).catch(function() { return null })
 }
@@ -171,54 +155,60 @@ function loremFlickrFallback(name, productId) {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  var apiKey = process.env.GEMINI_API_KEY
+  var apiKey = process.env.BING_API_KEY
   if (!apiKey) {
-    console.error('Error: GEMINI_API_KEY must be set.')
+    console.error('Error: BING_API_KEY must be set.')
     console.error('Usage: export $(cat .image-api-keys | xargs) && node scripts/update-images.js')
     process.exit(1)
   }
 
-  var products = db.prepare('SELECT product_id, product_name FROM products ORDER BY product_id').all()
+  // Load all products + their current image URLs from DB
+  var products = db.prepare('SELECT product_id, product_name, product_image FROM products ORDER BY product_id').all()
   console.log('Loaded ' + products.length + ' products.')
 
-  var nameMap = {}
+  // Find unique names that still use LoremFlickr in the DB
+  var loremNames = new Set()
+  var nameToIds  = {}
   products.forEach(function(p) {
     var name = p.product_name.trim()
-    if (!nameMap[name]) nameMap[name] = []
-    nameMap[name].push(p.product_id)
+    if (!nameToIds[name]) nameToIds[name] = []
+    nameToIds[name].push(p.product_id)
+    if (p.product_image && p.product_image.indexOf('loremflickr.com') !== -1) {
+      loremNames.add(name)
+    }
   })
 
-  var allNames  = Object.keys(nameMap)
-  var progress  = loadProgress()
-  var urlCache  = progress.urls || {}
+  var progress = loadProgress()
+  var urlCache = progress.urls || {}
 
-  // Re-queue any product that previously got a LoremFlickr fallback
-  var doneSet = new Set(
+  // Skip names already upgraded this run (i.e. saved with a non-loremflickr URL)
+  var doneThisRun = new Set(
     (progress.done || []).filter(function(n) {
       return urlCache[n] && urlCache[n].indexOf('loremflickr.com') === -1
     })
   )
 
-  var remaining = allNames.filter(function(n) { return !doneSet.has(n) })
+  var remaining = Array.from(loremNames).filter(function(n) { return !doneThisRun.has(n) })
 
-  console.log('Unique product names: ' + allNames.length)
-  console.log('Already processed:    ' + doneSet.size)
-  console.log('Remaining:            ' + remaining.length + '\n')
+  console.log('Products using LoremFlickr: ' + loremNames.size)
+  console.log('Already upgraded this run:  ' + doneThisRun.size)
+  console.log('Remaining:                  ' + remaining.length + '\n')
 
   if (remaining.length === 0) {
-    console.log('All products already have images. Nothing to do.')
+    console.log('No LoremFlickr images left to replace. Nothing to do.')
     db.close()
     return
   }
 
   var realImages = 0
   var fallbacks  = 0
+  var processed  = 0
 
   for (var i = 0; i < remaining.length; i++) {
     var name     = remaining[i]
     var finalUrl = null
 
-    var candidate = await getImageUrl(name, apiKey)
+    var candidate = await searchBing(name, apiKey)
 
     if (candidate) {
       var valid = await validateImageUrl(candidate)
@@ -229,42 +219,46 @@ async function main() {
     }
 
     if (!finalUrl) {
-      finalUrl = loremFlickrFallback(name)
+      // Keep existing LoremFlickr URL (with lock) rather than generating a new one
+      var existing = products.find(function(p) { return p.product_name.trim() === name })
+      finalUrl = (existing && existing.product_image) || loremFlickrFallback(name, nameToIds[name][0])
       fallbacks++
     }
 
+    processed++
     urlCache[name] = finalUrl
-    doneSet.add(name)
-    console.log('[' + doneSet.size + '/' + allNames.length + '] ' + name.substring(0, 55) + '\n  → ' + finalUrl)
+    doneThisRun.add(name)
+    console.log('[' + processed + '/' + remaining.length + '] ' + name.substring(0, 55) + '\n  → ' + finalUrl)
 
     // Save progress every 10 items
-    if (doneSet.size % 10 === 0) {
-      saveProgress({ done: Array.from(doneSet), urls: urlCache })
+    if (processed % 10 === 0) {
+      saveProgress({ done: Array.from(doneThisRun), urls: urlCache })
     }
 
     if (i < remaining.length - 1) await sleep(DELAY_MS)
   }
 
-  // Write to DB
+  // Write upgraded URLs to DB (only update rows that got a real image)
   console.log('\nWriting to database...')
   var update = db.prepare('UPDATE products SET product_image = ? WHERE product_id = ?')
   db.transaction(function() {
-    products.forEach(function(p) {
-      var u = urlCache[p.product_name.trim()]
-      if (u) update.run(u, p.product_id)
+    Object.keys(urlCache).forEach(function(name) {
+      var u = urlCache[name]
+      if (!u || u.indexOf('loremflickr.com') !== -1) return   // skip fallbacks
+      var ids = nameToIds[name] || []
+      ids.forEach(function(id) { update.run(u, id) })
     })
   })()
 
-  saveProgress({ done: Array.from(doneSet), urls: urlCache })
+  saveProgress({ done: Array.from(doneThisRun), urls: urlCache })
 
-  var pct = Math.round(100 * realImages / (realImages + fallbacks))
+  var pct = realImages + fallbacks > 0
+    ? Math.round(100 * realImages / (realImages + fallbacks))
+    : 0
   console.log('\nDone.')
   console.log('  Real product images: ' + realImages + ' (' + pct + '%)')
-  console.log('  LoremFlickr:         ' + fallbacks)
-  console.log('  Total: ' + doneSet.size + ' / ' + allNames.length)
-
-  if (allNames.length === doneSet.size) console.log('\nALL PRODUCTS UPDATED.')
-  else console.log('  Run again to continue.')
+  console.log('  LoremFlickr kept:    ' + fallbacks)
+  console.log('  Processed: ' + processed + ' / ' + remaining.length)
 
   db.close()
 }
