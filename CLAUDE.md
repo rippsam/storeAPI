@@ -9,7 +9,14 @@
 
 ## Images
 - Product images live in `Memes/`, served at the `/images` route. Keep them here — do not move them to the website repo.
+- Files in `Memes/` have `.png` extensions but many are actually JPEG/WebP/GIF. This is fine — browsers sniff content type from the file header, not the extension.
 - `scripts/assign-local-images.js` randomly reassigns all product images. Only run it intentionally.
+- `scripts/add-product-images-table.js` is destructive: it drops and repopulates all rows in `product_images` and resyncs `products.product_image` to match `sort_order=0`. Only run it intentionally.
+
+## product_images table
+- Schema: `(id, product_id, image_url, sort_order)`. Each product has 1–3 images.
+- `sort_order=0` is the primary image; it is synced back to `products.product_image` so card views and the detail gallery always show the same first image.
+- The website fetches all images via `GET /products/:id/images`, which reads from this table ordered by `sort_order`.
 
 ## JavaScript style
 - Use `const` by default; use `let` when the variable is reassigned. Never use `var`.
