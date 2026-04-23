@@ -56,4 +56,13 @@ const insertAll = db.transaction(function() {
 insertAll();
 
 console.log(`Populated product_images for ${products.length} products (${poolIdx} total image rows).`);
+
+db.prepare(`
+  UPDATE products SET product_image = (
+    SELECT image_url FROM product_images
+    WHERE product_id = products.product_id AND sort_order = 0
+  )
+`).run();
+
+console.log('Synced product_image to match first product_images entry.');
 db.close();
