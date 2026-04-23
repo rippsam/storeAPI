@@ -84,6 +84,13 @@ app.get('/products/:id', wrap((req, res) => {
     res.json({ data: row })
 }))
 
+app.get('/products/:id/images', wrap((req, res) => {
+    const product = db.prepare('SELECT product_id FROM products WHERE product_id = ?').get(req.params.id)
+    if (!product) return res.status(404).json({ error: 'Product not found' })
+    const rows = db.prepare('SELECT image_url FROM product_images WHERE product_id = ? ORDER BY sort_order').all(req.params.id)
+    res.json({ data: rows.map(function(r) { return r.image_url }) })
+}))
+
 // ─── Customers ───────────────────────────────────────────────────────────────
 
 app.get('/customers', wrap((req, res) => {
