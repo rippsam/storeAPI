@@ -6,6 +6,8 @@ const app = express()
 const PORT = process.env.PORT || 3000
 const DB_PATH = path.join(__dirname, '..', 'store.db')
 
+app.use('/images', express.static(path.join(__dirname, '../Memes')))
+
 // Allow requests from any origin (needed for the frontend website)
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*')
