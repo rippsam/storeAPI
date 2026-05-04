@@ -64,8 +64,8 @@ GET /categories?department_id=2
 ```json
 {
   "data": [
-    { "category_id": 1, "category_department_id": 2, "category_name": "Football" },
-    { "category_id": 2, "category_department_id": 2, "category_name": "Soccer" }
+    { "category_id": 2, "category_department_id": 2, "category_name": "Football" },
+    { "category_id": 3, "category_department_id": 2, "category_name": "Soccer" }
   ]
 }
 ```
