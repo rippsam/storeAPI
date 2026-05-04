@@ -20,8 +20,13 @@ GET /departments
 ```json
 {
   "data": [
-    { "department_id": 2, "department_name": "Fitness" },
-    { "department_id": 3, "department_name": "Footwear" }
+    { "department_id": 2, "department_name": "Sports" },
+    { "department_id": 3, "department_name": "Fitness" },
+    { "department_id": 4, "department_name": "Footwear" },
+    { "department_id": 5, "department_name": "Apparel" },
+    { "department_id": 6, "department_name": "Golf" },
+    { "department_id": 7, "department_name": "Outdoors" },
+    { "department_id": 8, "department_name": "Fan Shop" }
   ]
 }
 ```
@@ -37,7 +42,7 @@ GET /departments/2
 ```
 ```json
 {
-  "data": { "department_id": 2, "department_name": "Fitness" }
+  "data": { "department_id": 2, "department_name": "Sports" }
 }
 ```
 
@@ -59,8 +64,8 @@ GET /categories?department_id=2
 ```json
 {
   "data": [
-    { "category_id": 9, "category_department_id": 2, "category_name": "Cardio Equipment" },
-    { "category_id": 10, "category_department_id": 2, "category_name": "Strength Training" }
+    { "category_id": 1, "category_department_id": 2, "category_name": "Football" },
+    { "category_id": 2, "category_department_id": 2, "category_name": "Soccer" }
   ]
 }
 ```
@@ -133,7 +138,6 @@ GET /customers?limit=2
       "customer_fname": "Richard",
       "customer_lname": "Hernandez",
       "customer_email": "XXXXXXXXX",
-      "customer_password": "XXXXXXXXX",
       "customer_street": "6303 Heather Plaza",
       "customer_city": "Brownsville",
       "customer_state": "TX",
@@ -144,6 +148,8 @@ GET /customers?limit=2
   "offset": 0
 }
 ```
+
+> **Note:** `customer_password` is never returned by this API.
 
 ---
 
@@ -226,3 +232,5 @@ GET /products?limit=10&offset=20
 
 - `limit`: how many records to return (default: 25, max: 500)
 - `offset`: how many records to skip (default: 0)
+
+Both parameters must be valid integers. Mixed strings (e.g. `999abc`) and non-numeric values are rejected and fall back to their defaults.

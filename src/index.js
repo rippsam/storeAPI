@@ -97,12 +97,12 @@ app.get('/products/:id/images', wrap((req, res) => {
 
 app.get('/customers', wrap((req, res) => {
     const { limit, offset } = pagination(req.query)
-    const rows = db.prepare('SELECT customer_id, customer_first_name, customer_last_name, customer_email FROM customers ORDER BY customer_id LIMIT ? OFFSET ?').all(limit, offset)
+    const rows = db.prepare('SELECT customer_id, customer_fname, customer_lname, customer_email, customer_street, customer_city, customer_state, customer_zipcode FROM customers ORDER BY customer_id LIMIT ? OFFSET ?').all(limit, offset)
     res.json({ data: rows, limit, offset })
 }))
 
 app.get('/customers/:id', wrap((req, res) => {
-    const row = db.prepare('SELECT customer_id, customer_first_name, customer_last_name, customer_email FROM customers WHERE customer_id = ?').get(req.params.id)
+    const row = db.prepare('SELECT customer_id, customer_fname, customer_lname, customer_email, customer_street, customer_city, customer_state, customer_zipcode FROM customers WHERE customer_id = ?').get(req.params.id)
     if (!row) return res.status(404).json({ error: 'Customer not found' })
     res.json({ data: row })
 }))
