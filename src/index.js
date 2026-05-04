@@ -19,8 +19,10 @@ const db = new Database(DB_PATH, { readonly: true })
 
 // Parse limit/offset query params with defaults and caps
 function pagination(query) {
-    const limit = Math.min(Math.max(parseInt(query.limit) || 25, 1), 500)
-    const offset = Math.max(parseInt(query.offset) || 0, 0)
+    const rawLimit  = Number(query.limit)
+    const rawOffset = Number(query.offset)
+    const limit  = Math.min(Math.max(Number.isInteger(rawLimit)  && rawLimit  > 0 ? rawLimit  : 25, 1), 500)
+    const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0
     return { limit, offset }
 }
 
@@ -95,12 +97,12 @@ app.get('/products/:id/images', wrap((req, res) => {
 
 app.get('/customers', wrap((req, res) => {
     const { limit, offset } = pagination(req.query)
-    const rows = db.prepare('SELECT * FROM customers ORDER BY customer_id LIMIT ? OFFSET ?').all(limit, offset)
+    const rows = db.prepare('SELECT customer_id, customer_first_name, customer_last_name, customer_email FROM customers ORDER BY customer_id LIMIT ? OFFSET ?').all(limit, offset)
     res.json({ data: rows, limit, offset })
 }))
 
 app.get('/customers/:id', wrap((req, res) => {
-    const row = db.prepare('SELECT * FROM customers WHERE customer_id = ?').get(req.params.id)
+    const row = db.prepare('SELECT customer_id, customer_first_name, customer_last_name, customer_email FROM customers WHERE customer_id = ?').get(req.params.id)
     if (!row) return res.status(404).json({ error: 'Customer not found' })
     res.json({ data: row })
 }))
