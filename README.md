@@ -111,6 +111,38 @@ GET /products?limit=3&offset=0
 
 ---
 
+#### `GET /products/search`
+Search products by name. Returns up to 8 results by default.
+
+| Query Param | Type | Description | Default | Max |
+|---|---|---|---|---|
+| `q` | string | Search term (case-insensitive, matches anywhere in name) | — | — |
+| `limit` | integer | Number of results | 25 | 500 |
+| `offset` | integer | Skip N results | 0 | — |
+
+**Example**
+```
+GET /products/search?q=running&limit=8
+```
+```json
+{
+  "data": [
+    {
+      "product_id": 365,
+      "product_category_id": 27,
+      "product_name": "Nike Women's Running Shoe",
+      "product_description": "",
+      "product_price": 89.99,
+      "product_image": "http://images.acmesports.sports/Nike+Women%27s+Running+Shoe"
+    }
+  ],
+  "limit": 8,
+  "offset": 0
+}
+```
+
+---
+
 #### `GET /products/:id`
 Returns a single product by ID.
 

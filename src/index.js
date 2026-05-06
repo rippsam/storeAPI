@@ -80,6 +80,17 @@ app.get('/products', wrap((req, res) => {
     res.json({ data: db.prepare(query).all(...params), limit, offset })
 }))
 
+app.get('/products/search', wrap((req, res) => {
+    const q = (req.query.q || '').trim()
+    if (!q) return res.json({ data: [] })
+    const { limit, offset } = pagination(req.query)
+    const term = `%${q}%`
+    const rows = db.prepare(
+        'SELECT * FROM products WHERE product_name LIKE ? ORDER BY product_id LIMIT ? OFFSET ?'
+    ).all(term, limit, offset)
+    res.json({ data: rows, limit, offset })
+}))
+
 app.get('/products/:id', wrap((req, res) => {
     const row = db.prepare('SELECT * FROM products WHERE product_id = ?').get(req.params.id)
     if (!row) return res.status(404).json({ error: 'Product not found' })
