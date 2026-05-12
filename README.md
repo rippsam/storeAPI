@@ -268,7 +268,7 @@ Returns a paginated list of products. Optionally filter by category.
 | `limit` | integer | Number of results | 25 | 500 |
 | `offset` | integer | Skip N results | 0 | — |
 
-**Example**
+**Example — all products (paginated)**
 ```
 GET /products?limit=2&offset=0
 ```
@@ -293,6 +293,28 @@ GET /products?limit=2&offset=0
     }
   ],
   "total": 1345,
+  "limit": 2,
+  "offset": 0
+}
+```
+
+**Example — filter by category (Basketball = category 5)**
+```
+GET /products?category_id=5&limit=2
+```
+```json
+{
+  "data": [
+    {
+      "product_id": 74,
+      "product_category_id": 5,
+      "product_name": "Goaliath 54\" In-Ground Basketball Hoop with P",
+      "product_description": "Durable in-ground basketball hoop designed for long-lasting outdoor play, featuring a 54\" backboard and adjustable pole.",
+      "product_price": 499.99,
+      "product_image": "https://storeapi-60py.onrender.com/images/681.png"
+    }
+  ],
+  "total": 24,
   "limit": 2,
   "offset": 0
 }
