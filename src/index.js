@@ -17,6 +17,15 @@ app.use((req, res, next) => {
 
 const db = new Database(DB_PATH, { readonly: true })
 
+// Cache record counts at startup — DB is read-only so these never change
+const COUNTS = {
+    departments: db.prepare('SELECT COUNT(*) as n FROM departments').get().n,
+    categories:  db.prepare('SELECT COUNT(*) as n FROM categories').get().n,
+    products:    db.prepare('SELECT COUNT(*) as n FROM products').get().n,
+    customers:   db.prepare('SELECT COUNT(*) as n FROM customers').get().n,
+    orders:      db.prepare('SELECT COUNT(*) as n FROM orders').get().n,
+}
+
 // Parse limit/offset query params with defaults and caps
 function pagination(query) {
     const rawLimit  = Number(query.limit)
@@ -33,6 +42,35 @@ function wrap(fn) {
     }
 }
 
+// ─── Root ────────────────────────────────────────────────────────────────────
+
+app.get('/', wrap((req, res) => {
+    res.json({
+        name: 'Store API',
+        description: 'Read-only REST API for a sports retail store',
+        base_url: 'https://storeapi-60py.onrender.com',
+        counts: COUNTS,
+        endpoints: [
+            'GET /',
+            'GET /departments',
+            'GET /departments/:id',
+            'GET /departments/:id/categories',
+            'GET /categories',
+            'GET /categories/:id',
+            'GET /products',
+            'GET /products/search',
+            'GET /products/:id',
+            'GET /products/:id/images',
+            'GET /customers',
+            'GET /customers/:id',
+            'GET /customers/:id/orders',
+            'GET /orders',
+            'GET /orders/:id',
+            'GET /orders/:id/items',
+        ]
+    })
+}))
+
 // ─── Departments ─────────────────────────────────────────────────────────────
 
 app.get('/departments', wrap((req, res) => {
@@ -44,6 +82,13 @@ app.get('/departments/:id', wrap((req, res) => {
     const row = db.prepare('SELECT * FROM departments WHERE department_id = ?').get(req.params.id)
     if (!row) return res.status(404).json({ error: 'Department not found' })
     res.json({ data: row })
+}))
+
+app.get('/departments/:id/categories', wrap((req, res) => {
+    const dept = db.prepare('SELECT department_id FROM departments WHERE department_id = ?').get(req.params.id)
+    if (!dept) return res.status(404).json({ error: 'Department not found' })
+    const rows = db.prepare('SELECT * FROM categories WHERE category_department_id = ? ORDER BY category_id').all(req.params.id)
+    res.json({ data: rows })
 }))
 
 // ─── Categories ──────────────────────────────────────────────────────────────
@@ -70,25 +115,31 @@ app.get('/categories/:id', wrap((req, res) => {
 app.get('/products', wrap((req, res) => {
     const { limit, offset } = pagination(req.query)
     let query = 'SELECT * FROM products'
+    let countQuery = 'SELECT COUNT(*) as total FROM products'
     const params = []
+    const countParams = []
     if (req.query.category_id) {
         query += ' WHERE product_category_id = ?'
+        countQuery += ' WHERE product_category_id = ?'
         params.push(req.query.category_id)
+        countParams.push(req.query.category_id)
     }
-    query += ` ORDER BY product_id LIMIT ? OFFSET ?`
+    query += ' ORDER BY product_id LIMIT ? OFFSET ?'
     params.push(limit, offset)
-    res.json({ data: db.prepare(query).all(...params), limit, offset })
+    const total = db.prepare(countQuery).get(...countParams).total
+    res.json({ data: db.prepare(query).all(...params), total, limit, offset })
 }))
 
 app.get('/products/search', wrap((req, res) => {
     const q = (req.query.q || '').trim()
-    if (!q) return res.json({ data: [] })
     const { limit, offset } = pagination(req.query)
+    if (!q) return res.json({ data: [], total: 0, limit, offset })
     const term = `%${q}%`
+    const total = db.prepare('SELECT COUNT(*) as total FROM products WHERE product_name LIKE ?').get(term).total
     const rows = db.prepare(
         'SELECT * FROM products WHERE product_name LIKE ? ORDER BY product_id LIMIT ? OFFSET ?'
     ).all(term, limit, offset)
-    res.json({ data: rows, limit, offset })
+    res.json({ data: rows, total, limit, offset })
 }))
 
 app.get('/products/:id', wrap((req, res) => {
@@ -108,14 +159,24 @@ app.get('/products/:id/images', wrap((req, res) => {
 
 app.get('/customers', wrap((req, res) => {
     const { limit, offset } = pagination(req.query)
+    const total = db.prepare('SELECT COUNT(*) as total FROM customers').get().total
     const rows = db.prepare('SELECT customer_id, customer_fname, customer_lname, customer_email, customer_street, customer_city, customer_state, customer_zipcode FROM customers ORDER BY customer_id LIMIT ? OFFSET ?').all(limit, offset)
-    res.json({ data: rows, limit, offset })
+    res.json({ data: rows, total, limit, offset })
 }))
 
 app.get('/customers/:id', wrap((req, res) => {
     const row = db.prepare('SELECT customer_id, customer_fname, customer_lname, customer_email, customer_street, customer_city, customer_state, customer_zipcode FROM customers WHERE customer_id = ?').get(req.params.id)
     if (!row) return res.status(404).json({ error: 'Customer not found' })
     res.json({ data: row })
+}))
+
+app.get('/customers/:id/orders', wrap((req, res) => {
+    const customer = db.prepare('SELECT customer_id FROM customers WHERE customer_id = ?').get(req.params.id)
+    if (!customer) return res.status(404).json({ error: 'Customer not found' })
+    const { limit, offset } = pagination(req.query)
+    const total = db.prepare('SELECT COUNT(*) as total FROM orders WHERE order_customer_id = ?').get(req.params.id).total
+    const rows = db.prepare('SELECT * FROM orders WHERE order_customer_id = ? ORDER BY order_id LIMIT ? OFFSET ?').all(req.params.id, limit, offset)
+    res.json({ data: rows, total, limit, offset })
 }))
 
 // ─── Orders ──────────────────────────────────────────────────────────────────
@@ -135,8 +196,9 @@ app.get('/orders', wrap((req, res) => {
     }
 
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : ''
+    const total = db.prepare(`SELECT COUNT(*) as total FROM orders ${where}`).get(...params).total
     const rows = db.prepare(`SELECT * FROM orders ${where} ORDER BY order_id LIMIT ? OFFSET ?`).all(...params, limit, offset)
-    res.json({ data: rows, limit, offset })
+    res.json({ data: rows, total, limit, offset })
 }))
 
 app.get('/orders/:id', wrap((req, res) => {
@@ -151,6 +213,12 @@ app.get('/orders/:id/items', wrap((req, res) => {
     const rows = db.prepare('SELECT * FROM order_items WHERE order_item_order_id = ? ORDER BY order_item_id').all(req.params.id)
     res.json({ data: rows })
 }))
+
+// ─── 404 handler ─────────────────────────────────────────────────────────────
+
+app.use((req, res) => {
+    res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` })
+})
 
 // ─── Error handler ───────────────────────────────────────────────────────────
 
