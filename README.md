@@ -50,6 +50,38 @@ Customers  →  Orders ────┘
 
 ---
 
+## Following relationships
+
+Each resource includes IDs that link to related resources. Here are the most common traversals:
+
+**From a product → its category and department**
+
+A product's `product_category_id` tells you which category it belongs to:
+```
+GET /products/365          → product_category_id: 14
+GET /categories/14         → category_department_id: 3
+GET /departments/3         → "Fitness"
+```
+
+**From an order → the products inside it**
+
+Use `GET /orders/:id/items` to get the line items, then use each `order_item_product_id` to fetch the full product:
+```
+GET /orders/4/items        → order_item_product_id: 897, 365, 502, 1014
+GET /products/897          → "Team Golf New England Patriots Putter Grip"
+GET /products/365          → "Perfect Fitness Perfect Rip Deck"
+```
+
+**From an order → the customer who placed it**
+
+An order's `order_customer_id` points to the customer:
+```
+GET /orders/4              → order_customer_id: 8827
+GET /customers/8827        → Richard ... (customer details)
+```
+
+---
+
 ## Response format
 
 Every response wraps its result in a `data` field:
@@ -143,7 +175,19 @@ GET /
     "GET /",
     "GET /departments",
     "GET /departments/:id",
-    "..."
+    "GET /departments/:id/categories",
+    "GET /categories",
+    "GET /categories/:id",
+    "GET /products",
+    "GET /products/search",
+    "GET /products/:id",
+    "GET /products/:id/images",
+    "GET /customers",
+    "GET /customers/:id",
+    "GET /customers/:id/orders",
+    "GET /orders",
+    "GET /orders/:id",
+    "GET /orders/:id/items"
   ]
 }
 ```
@@ -216,18 +260,39 @@ GET /departments/2/categories
 }
 ```
 
+**If the department ID does not exist:**
+```json
+{ "error": "Department not found" }
+```
+
 ---
 
 ### Categories
 
 #### `GET /categories`
-Returns all 57 categories. Optionally filter by department.
+Returns categories. Without `department_id`, all 57 categories are returned. With `department_id`, only categories in that department are returned.
 
 | Query Param | Type | Description |
 |---|---|---|
 | `department_id` | integer | Only return categories in this department |
 
-**Example**
+> **Note:** Passing a `department_id` that does not exist returns an empty array, not a 404.
+
+**Example — all categories**
+```
+GET /categories
+```
+```json
+{
+  "data": [
+    { "category_id": 2, "category_department_id": 2, "category_name": "Football" },
+    { "category_id": 3, "category_department_id": 2, "category_name": "Soccer" },
+    "... (57 total)"
+  ]
+}
+```
+
+**Example — filter by department**
 ```
 GET /categories?department_id=2
 ```
@@ -255,6 +320,11 @@ GET /categories/5
 }
 ```
 
+**If the ID does not exist:**
+```json
+{ "error": "Category not found" }
+```
+
 ---
 
 ### Products
@@ -267,6 +337,10 @@ Returns a paginated list of products. Optionally filter by category.
 | `category_id` | integer | Only return products in this category | — | — |
 | `limit` | integer | Number of results | 25 | 500 |
 | `offset` | integer | Skip N results | 0 | — |
+
+> **Note:** Passing a `category_id` that does not exist returns `{ "data": [], "total": 0, ... }`, not a 404.
+
+> **Note:** `product_image` is a full URL — you can use it directly as the `src` of an `<img>` tag.
 
 **Example — all products (paginated)**
 ```
@@ -331,7 +405,9 @@ Search products by name. Case-insensitive, matches anywhere in the product name.
 | `limit` | integer | Number of results | 25 | 500 |
 | `offset` | integer | Skip N results | 0 | — |
 
-**Example**
+> **Note:** If `q` is missing or empty, the response is `{ "data": [], "total": 0, "limit": 25, "offset": 0 }`. No error is returned.
+
+**Example — search with results**
 ```
 GET /products/search?q=basketball&limit=2
 ```
@@ -349,6 +425,19 @@ GET /products/search?q=basketball&limit=2
   ],
   "total": 48,
   "limit": 2,
+  "offset": 0
+}
+```
+
+**Example — search with no results**
+```
+GET /products/search?q=xylophone
+```
+```json
+{
+  "data": [],
+  "total": 0,
+  "limit": 25,
   "offset": 0
 }
 ```
@@ -383,7 +472,7 @@ GET /products/19
 ---
 
 #### `GET /products/:id/images`
-Returns an ordered array of image URLs for a product. Most products have 1–3 images. The first image always matches the `product_image` field on the product itself.
+Returns an ordered array of image URLs for a product. Most products have 1–3 images. The first image always matches the `product_image` field on the product itself. All URLs can be used directly as `<img src="...">`.
 
 **Example**
 ```
@@ -396,6 +485,11 @@ GET /products/1/images
     "https://storeapi-60py.onrender.com/images/1626.png"
   ]
 }
+```
+
+**If the product ID does not exist:**
+```json
+{ "error": "Product not found" }
 ```
 
 ---
@@ -460,6 +554,11 @@ GET /customers/1
 }
 ```
 
+**If the ID does not exist:**
+```json
+{ "error": "Customer not found" }
+```
+
 ---
 
 #### `GET /customers/:id/orders`
@@ -496,12 +595,17 @@ GET /customers/11599/orders
 }
 ```
 
+**If the customer ID does not exist:**
+```json
+{ "error": "Customer not found" }
+```
+
 ---
 
 ### Orders
 
 #### `GET /orders`
-Returns a paginated list of orders. Filter by customer or status.
+Returns a paginated list of orders. Filter by customer, status, or both.
 
 | Query Param | Type | Description | Default | Max |
 |---|---|---|---|---|
@@ -512,7 +616,9 @@ Returns a paginated list of orders. Filter by customer or status.
 
 **Valid status values:** `COMPLETE`, `CLOSED`, `PENDING`, `PENDING_PAYMENT`, `PROCESSING`, `CANCELED`, `ON_HOLD`, `PAYMENT_REVIEW`, `SUSPECTED_FRAUD`
 
-**Example**
+> **Note:** Both `customer_id` and `status` can be used together to narrow results further, e.g. `?customer_id=11599&status=complete`. Passing a `customer_id` that does not exist returns an empty array, not a 404.
+
+**Example — filter by status**
 ```
 GET /orders?status=complete&limit=2
 ```
@@ -538,6 +644,32 @@ GET /orders?status=complete&limit=2
 }
 ```
 
+**Example — filter by customer**
+```
+GET /orders?customer_id=11599
+```
+```json
+{
+  "data": [
+    {
+      "order_id": 1,
+      "order_date": "2013-07-25 00:00:00",
+      "order_customer_id": 11599,
+      "order_status": "CLOSED"
+    },
+    {
+      "order_id": 11397,
+      "order_date": "2013-10-03 00:00:00",
+      "order_customer_id": 11599,
+      "order_status": "COMPLETE"
+    }
+  ],
+  "total": 5,
+  "limit": 25,
+  "offset": 0
+}
+```
+
 ---
 
 #### `GET /orders/:id`
@@ -558,27 +690,46 @@ GET /orders/1
 }
 ```
 
+**If the ID does not exist:**
+```json
+{ "error": "Order not found" }
+```
+
 ---
 
 #### `GET /orders/:id/items`
-Returns all line items in a specific order. Each item includes the product ID, quantity, and price paid at the time of purchase.
+Returns all line items in a specific order.
 
-To get full product details for an item, use `order_item_product_id` with `GET /products/:id`.
+Each item has two price fields:
+- `order_item_product_price` — the unit price of the product at the time of purchase
+- `order_item_subtotal` — the total for that line: `quantity × unit_price`
+
+> **Note:** `order_item_product_price` reflects the price when the order was placed, which may differ from the product's current `product_price`.
+
+To get the full product details for an item, use `order_item_product_id` with `GET /products/:id`.
 
 **Example**
 ```
-GET /orders/1/items
+GET /orders/4/items
 ```
 ```json
 {
   "data": [
     {
-      "order_item_id": 1,
-      "order_item_order_id": 1,
-      "order_item_product_id": 957,
-      "order_item_quantity": 1,
-      "order_item_subtotal": 299.98,
-      "order_item_product_price": 299.98
+      "order_item_id": 5,
+      "order_item_order_id": 4,
+      "order_item_product_id": 897,
+      "order_item_quantity": 2,
+      "order_item_product_price": 24.99,
+      "order_item_subtotal": 49.98
+    },
+    {
+      "order_item_id": 6,
+      "order_item_order_id": 4,
+      "order_item_product_id": 365,
+      "order_item_quantity": 5,
+      "order_item_product_price": 59.99,
+      "order_item_subtotal": 299.95
     }
   ]
 }
