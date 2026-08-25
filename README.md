@@ -29,7 +29,9 @@ fetch('https://storeapi-60py.onrender.com/products?limit=3')
 curl "https://storeapi-60py.onrender.com/products?limit=3"
 ```
 
-**Postman or Insomnia** — create a new GET request, paste in the URL, and click Send.
+**Postman or Insomnia** — create a new request, set the method to `GET`, and paste in a URL like `https://storeapi-60py.onrender.com/products?limit=3`. To add query params without typing them into the URL, use the **Params** tab below the URL bar — enter `limit` / `3` as a key/value pair and Postman appends `?limit=3` for you. Leave the **Authorization** tab set to `No Auth` — this API needs no API key or token. Click Send; the response appears as JSON in the body pane below (switch to **Pretty** view if it isn't already).
+
+> **This API only supports `GET`.** Every endpoint below is read-only. Sending a `POST`, `PUT`, or `DELETE` request (from Postman or anywhere else) returns `404 { "error": "Route not found: ..." }`, not a validation error — there's simply no route registered for it.
 
 ---
 
@@ -286,11 +288,11 @@ GET /categories
 {
   "data": [
     { "category_id": 2, "category_department_id": 2, "category_name": "Football" },
-    { "category_id": 3, "category_department_id": 2, "category_name": "Soccer" },
-    "... (57 total)"
+    { "category_id": 3, "category_department_id": 2, "category_name": "Soccer" }
   ]
 }
 ```
+*(57 categories total — shortened here for readability; use `?department_id=` to narrow the list, as shown below.)*
 
 **Example — filter by department**
 ```
